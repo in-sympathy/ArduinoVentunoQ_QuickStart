@@ -24,8 +24,9 @@
 #   --sudo           Passwordless sudo for the invoking user, via a
 #                    validated /etc/sudoers.d/ drop-in.
 #   --github-ssh     Generate (or reuse) an ed25519 key for GitHub access,
-#                    print the public key with setup steps. Never touches
-#                    GitHub itself.
+#                    route github.com's SSH over port 443 (gets through
+#                    networks that block 22), print the public key with
+#                    setup steps. Never touches GitHub itself.
 #
 # Boot root -- at most one; always runs AFTER the setup stages (see BOOT
 # ROOT below for why):
@@ -744,6 +745,12 @@ github_port_open() {
   timeout 5 bash -c '</dev/tcp/$0/$1' "$1" "$2" 2>/dev/null
 }
 
+# Prints the host and port ssh actually connects to for github.com, with
+# everything in ~/.ssh/config (and /etc/ssh) applied.
+github_route() {
+  ssh -G github.com 2>/dev/null | awk '$1 == "hostname" {h = $2} $1 == "port" {p = $2} END {print h, p}'
+}
+
 stage_github_ssh() {
   local ssh_dir="$HOME/.ssh"
   mkdir -p "$ssh_dir"
@@ -809,25 +816,24 @@ stage_github_ssh() {
     } >> "$config_file"
   fi
 
-  # Some networks block outbound port 22 (the lab's Uzhgorod connection
-  # does), so `ssh git@github.com` hangs until it times out. GitHub also
-  # serves SSH on port 443 at ssh.github.com. If 22 gets no answer but 443
-  # does, route github.com there in a second managed block, so
-  # git@github.com:... remotes keep working unchanged. Port 443 works on
-  # every network, so the block stays even if the board moves somewhere
-  # that allows 22. A github.com -> port 443 setting you added yourself is
-  # detected via `ssh -G` and left as it is.
+  # Some networks block outbound port 22 -- the lab's Uzhgorod connection
+  # does -- and then `ssh git@github.com` just hangs until it times out.
+  # GitHub also serves SSH on port 443 at ssh.github.com, which gets
+  # through wherever HTTPS does, so github.com is ALWAYS routed there, in a
+  # second managed block: git@github.com:... remotes keep working unchanged.
+  # (It used to be routed there only when a check at setup time found port
+  # 22 blocked, which missed a board set up while 22 answered -- or with no
+  # network yet -- and used later on a network that blocks it.) A
+  # github.com -> port 443 route you added yourself is detected via
+  # `ssh -G` and left as it is.
   local p443_begin="# >>> ArduinoVentunoQ_QuickStart.sh managed block: github.com over port 443 >>>"
   local p443_end="# <<< ArduinoVentunoQ_QuickStart.sh managed block: github.com over port 443 <<<"
   local eff_host eff_port
-  eff_host="$(ssh -G github.com 2>/dev/null | awk '$1 == "hostname" {print $2; exit}')"
-  eff_port="$(ssh -G github.com 2>/dev/null | awk '$1 == "port" {print $2; exit}')"
+  read -r eff_host eff_port <<< "$(github_route)"
   if [[ $eff_host == "ssh.github.com" && $eff_port == "443" ]]; then
     log "github.com already goes over port 443 (ssh.github.com)"
-  elif github_port_open github.com 22; then
-    log "GitHub answers on port 22 here -- no port change needed"
-  elif github_port_open ssh.github.com 443; then
-    log "Port 22 to GitHub gets no answer on this network -- routing github.com over port 443 (ssh.github.com) in $config_file"
+  else
+    log "Routing github.com over port 443 (ssh.github.com) in $config_file -- it gets through networks that block port 22"
     {
       echo
       echo "$p443_begin"
@@ -837,8 +843,15 @@ stage_github_ssh() {
       echo "    User git"
       echo "$p443_end"
     } >> "$config_file"
-  else
-    warn "GitHub answers on neither port 22 nor port 443 (ssh.github.com) right now. Check this board's internet connection, then re-run: $SCRIPT_NAME --github-ssh"
+    # ssh takes the first value it finds for each setting, so a HostName or
+    # Port you set for github.com earlier in the file still wins.
+    read -r eff_host eff_port <<< "$(github_route)"
+    if [[ $eff_host != "ssh.github.com" || $eff_port != "443" ]]; then
+      warn "$config_file sets github.com's HostName/Port itself, earlier in the file (ssh uses $eff_host port $eff_port), and ssh takes the first value it finds -- remove those lines to use port 443."
+    fi
+  fi
+  if ! github_port_open ssh.github.com 443; then
+    warn "ssh.github.com doesn't answer on port 443 right now -- check this board's internet connection. The route is in place either way."
   fi
 
   log "Public key ($(basename "$pub_key")):"
@@ -1629,7 +1642,7 @@ declare -A STAGE_DESCRIPTIONS=(
   [zsh]="zsh + plugins as your login shell, deploy .zshrc"
   [tools]="Full upgrade + fastfetch, sysbench, btop, flashrom, speedtest"
   [sudo]="Passwordless sudo for you (validated sudoers.d drop-in)"
-  [github-ssh]="Make/reuse an ed25519 key for GitHub, print setup steps"
+  [github-ssh]="ed25519 key for GitHub, SSH via port 443, setup steps"
   [nvme-switch]="Copy this eMMC root to the NVMe and boot it (run last)"
   [emmc-rollback]="Boot the eMMC root next (turns the NVMe boot sync off)"
   [status]="Show where the next boot goes and the boot-sync state"
