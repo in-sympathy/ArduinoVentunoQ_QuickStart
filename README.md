@@ -72,7 +72,7 @@ Setup stages (any combination; always run in this order):
    2)  --zsh            zsh + plugins as your login shell, deploy .zshrc
    3)  --tools          Full upgrade + fastfetch, sysbench, btop, flashrom, speedtest
    4)  --sudo           Passwordless sudo for you (validated sudoers.d drop-in)
-   5)  --github-ssh     Make/reuse an ed25519 key for GitHub, print setup steps
+   5)  --github-ssh     ed25519 key for GitHub, SSH via port 443, setup steps
 
 Boot root (at most one; always runs after the setup stages):
    6)  --nvme-switch    Copy this eMMC root to the NVMe and boot it (run last)
@@ -113,7 +113,7 @@ come in.
 | `--zsh` | Installs `zsh` + `zsh-autosuggestions` + `zsh-syntax-highlighting`, makes it your login shell, and deploys `.zshrc`: the `adam1` prompt with the full hostname, shared history, menu completion, and the NIVROKU banner from `~/NivrokuGreeter.txt` once per boot if that file exists. |
 | `--tools` | Finishes any half-configured packages (`dpkg --configure -a`), then `apt update && full-upgrade` (kernel included), plus `fastfetch` (the latest arm64 `.deb` from its GitHub releases), `sysbench`, `btop`, `flashrom`, and the Ookla Speedtest CLI. Waits for unattended-upgrades first if it's busy, and prints a heads-up whenever the upgrade changes the kernel. |
 | `--sudo` | Passwordless `sudo` for the invoking user, via a `/etc/sudoers.d/` drop-in that's syntax-validated with `visudo -c` *before* it's ever installed. |
-| `--github-ssh` | Generates (or reuses) an `ed25519` SSH key for this board and prints the public key with the steps to add it to GitHub. Never touches GitHub itself. If this network blocks port 22 to GitHub, routes `github.com` over GitHub's port-443 SSH (`ssh.github.com`) so `git@github.com:…` remotes still work. Safe to re-run any time just to get the public key back on screen. |
+| `--github-ssh` | Generates (or reuses) an `ed25519` SSH key for this board and prints the public key with the steps to add it to GitHub. Never touches GitHub itself. Always routes `github.com`'s SSH over GitHub's port 443 (`ssh.github.com`), which gets through networks that block port 22, so `git@github.com:…` remotes work on any network. Safe to re-run any time just to get the public key back on screen. |
 
 ### Boot root
 
@@ -403,13 +403,17 @@ without starting a run.
   to `~/.ssh/config` (`StrictHostKeyChecking accept-new` for `github.com`)
   so that first connection doesn't hang on a host-key prompt; anything
   else already in that file is left untouched.
-- Some networks block outbound SSH on port 22: `ssh -T git@github.com`
-  then just hangs. `--github-ssh` checks for this and, when 22 gets no
-  answer but 443 does, adds a second managed block sending `github.com` to
-  `ssh.github.com` port 443 — GitHub's official SSH-over-HTTPS-port
-  endpoint. The block stays if the board later moves to a network that
-  allows 22, since 443 works everywhere. If you've already set this up by
-  hand, it's detected and left alone.
+- Some networks block outbound SSH on port 22: `git clone git@github.com:…`
+  then hangs and ends in `ssh: connect to host github.com port 22:
+  Connection timed out`. That's the network, not your key — a key problem
+  gets connected first and then fails with `Permission denied (publickey)`.
+  So `--github-ssh` always adds a second managed block sending `github.com`
+  to `ssh.github.com` port 443, GitHub's official SSH-over-HTTPS-port
+  endpoint, which works on any network that allows HTTPS. A route like that
+  you've set up by hand is detected and left alone. If your own
+  `github.com` settings earlier in `~/.ssh/config` set a `HostName` or
+  `Port`, they win (ssh takes the first value it finds), and the stage
+  warns you.
 - Keep the script's line endings as LF. A copy saved with Windows (CRLF)
   line endings won't run under bash at all.
 - Full log of each run: `~/.ventuno-q-deploy/logs/` (`--tools` also keeps
